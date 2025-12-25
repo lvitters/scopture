@@ -1,21 +1,28 @@
 class ProjectionWindow {
-  // Target Base Properties (Where we want to be)
-  float tX, tY;
-  float tRadius;
+  // Window Properties (Direct control)
+  float x, y;
+  float radius;
+  
+  // Content Target Properties (Morphing/Lerping)
+  float tContentX = 0, tContentY = 0; // Offset from center
   float tShapeSize;
   float tRotation = 0;
-  color tFillColor = color(255, 100);
-  color tStrokeColor = color(255);
-  float tStrokeWeight = 2;
+  int tColor = color(255);
+  boolean isFilled = true; // true = fill, false = stroke
+  float tStrokeWeight = 2; // Only used if !isFilled
   
-  // Current Properties (Where we are)
-  float cX, cY;
-  float cRadius;
+  // Content Current Properties
+  float cContentX = 0, cContentY = 0;
   float cShapeSize;
   float cRotation = 0;
-  color cFillColor = color(255, 100);
-  color cStrokeColor = color(255);
+  int cColor = color(255);
   float cStrokeWeight = 2;
+  
+  // Automation State
+  // 0 = Manual (Static/User Controlled)
+  // 1 = Timed Events (Reacts to onBeat)
+  // 2 = Continuous (Drifts via noise)
+  int automationMode = 0; 
   
   // Interaction
   boolean isDragging = false;
@@ -26,11 +33,12 @@ class ProjectionWindow {
   MorphShape shape;
   int id;
   float seed;
+  float timeOffset; // For noise diversity
   
   // Lerp Speed
   float lerpSpeed = 0.05;
   
-  // Animation Modulators
+  // Animation Modulators (Existing Wobble/Dynamics)
   float animOffsetX, animOffsetY;
   
   // Masking Buffers
@@ -39,107 +47,125 @@ class ProjectionWindow {
   
   ProjectionWindow(int id, float x, float y, float radius) {
     this.id = id;
-    this.tX = x; this.tY = y;
-    this.tRadius = radius;
-    this.tShapeSize = radius * 1.5; 
+    this.x = x; this.y = y;
+    this.radius = radius;
     
-    // Init currents
-    this.cX = x; this.cY = y;
-    this.cRadius = radius;
+    this.tShapeSize = radius * 1.5; 
     this.cShapeSize = tShapeSize;
     
     this.shape = new MorphShape(cShapeSize);
     this.seed = random(1000);
+    this.timeOffset = random(10000);
     
     // Init colors
-    shape.fillColor = cFillColor;
-    shape.strokeColor = cStrokeColor;
+    shape.fillColor = cColor;
+    shape.strokeColor = cColor;
     shape.strokeWeightVal = cStrokeWeight;
     
     checkBuffers();
   }
   
   void checkBuffers() {
-    // Determine required size (diameter + padding)
-    int requiredSize = (int)(cRadius * 2 + 20);
+    int requiredSize = (int)(radius * 2 + 20);
     if (pg == null || pg.width != requiredSize) {
       pg = createGraphics(requiredSize, requiredSize);
       pgMask = createGraphics(requiredSize, requiredSize);
       
-      // Update mask
       pgMask.beginDraw();
       pgMask.background(0);
       pgMask.fill(255);
       pgMask.noStroke();
-      pgMask.ellipse(requiredSize/2, requiredSize/2, cRadius * 2, cRadius * 2);
+      pgMask.ellipse(requiredSize/2, requiredSize/2, radius * 2, radius * 2);
       pgMask.endDraw();
     }
   }
 
-  void update(float time, int mode, float speed, float intensity, boolean sync) {
-    // 1. LERP Base Properties towards Targets
-    cX = lerp(cX, tX, lerpSpeed);
-    cY = lerp(cY, tY, lerpSpeed);
-    cRadius = lerp(cRadius, tRadius, lerpSpeed);
+  void update(float globalTime, int dynamicsMode, float speed, float intensity, boolean sync) {
+    
+    // 1. Handle Continuous Automation
+    if (automationMode == 2) {
+      float nSpeed = speed * 0.5; // Slower drift for properties
+      float t = globalTime * nSpeed + timeOffset;
+      
+      // Drift Size
+      float nSize = noise(t); 
+      tShapeSize = map(nSize, 0, 1, radius * 0.5, radius * 2.5);
+      
+      // Drift Rotation
+      float nRot = noise(t + 100);
+      tRotation = map(nRot, 0, 1, 0, TWO_PI * 2);
+      
+      // Drift Position (Content Offset)
+      float nX = noise(t + 200);
+      float nY = noise(t + 300);
+      float limit = radius * 0.5;
+      tContentX = map(nX, 0, 1, -limit, limit);
+      tContentY = map(nY, 0, 1, -limit, limit);
+      
+      // Drift Color
+      float nR = noise(t + 400);
+      float nG = noise(t + 500);
+      float nB = noise(t + 600);
+      tColor = color(nR * 255, nG * 255, nB * 255, alpha(tColor)); // Keep current alpha? Or drift alpha too?
+    }
+    
+    // 2. LERP Content Properties towards Targets
+    cContentX = lerp(cContentX, tContentX, lerpSpeed);
+    cContentY = lerp(cContentY, tContentY, lerpSpeed);
     cShapeSize = lerp(cShapeSize, tShapeSize, lerpSpeed);
     cRotation = lerp(cRotation, tRotation, lerpSpeed);
     cStrokeWeight = lerp(cStrokeWeight, tStrokeWeight, lerpSpeed);
-    
-    cFillColor = lerpColor(cFillColor, tFillColor, lerpSpeed);
-    cStrokeColor = lerpColor(cStrokeColor, tStrokeColor, lerpSpeed);
+    cColor = lerpColor(cColor, tColor, lerpSpeed);
     
     checkBuffers();
     
-    // 2. Calculate Animation/Noise
+    // 3. Calculate Dynamics (Wobble/Shake) - kept from previous version
     float effectiveSeed = sync ? 0 : seed;
     float mod = 0;
-    float colorMod = 0;
     float posXMod = 0;
     float posYMod = 0;
     
-    switch (mode) {
+    switch (dynamicsMode) {
       case 0: break;
-      case 1: 
-        mod = noise(effectiveSeed + time * speed) - 0.5;
-        colorMod = noise(effectiveSeed + 500 + time * speed) - 0.5;
-        posXMod = noise(effectiveSeed + 1000 + time * speed) - 0.5;
-        posYMod = noise(effectiveSeed + 2000 + time * speed) - 0.5;
+      case 1: // Noise
+        mod = noise(effectiveSeed + globalTime * speed) - 0.5;
+        posXMod = noise(effectiveSeed + 1000 + globalTime * speed) - 0.5;
+        posYMod = noise(effectiveSeed + 2000 + globalTime * speed) - 0.5;
         break;
-      case 2:
-        float phaseX = map(cX, 0, width, 0, TWO_PI);
-        float waveVal = sin(phaseX + time * speed * 5);
+      case 2: // Wave X
+        float phaseX = map(x, 0, width, 0, TWO_PI);
+        float waveVal = sin(phaseX + globalTime * speed * 5);
         mod = waveVal * 0.5;
-        colorMod = cos(phaseX + time * speed * 5) * 0.5;
         posYMod = waveVal * 0.5;
         break;
-      case 3:
-        float phaseY = map(cY, 0, height, 0, TWO_PI);
-        float waveValY = sin(phaseY + time * speed * 5);
+      case 3: // Wave Y
+        float phaseY = map(y, 0, height, 0, TWO_PI);
+        float waveValY = sin(phaseY + globalTime * speed * 5);
         mod = waveValY * 0.5;
-        colorMod = cos(phaseY + time * speed * 5) * 0.5;
         posXMod = waveValY * 0.5;
         break;
     }
     
-    // 3. Apply Animation to produce Final Drawing Values
-    // Position Offsets (Shape can now freely move, it will be masked)
-    animOffsetX = posXMod * cRadius * intensity * 2.0;
-    animOffsetY = posYMod * cRadius * intensity * 2.0;
+    // 4. Apply Dynamics
+    animOffsetX = posXMod * radius * intensity * 2.0;
+    animOffsetY = posYMod * radius * intensity * 2.0;
     
-    // Size Modulation
     float sizeVar = 1.0 + (mod * intensity * 2.0);
     shape.currentSize = cShapeSize * sizeVar;
     shape.calculateTargetVertices(shape.currentShapeType);
     
-    // Rotation
     shape.rotation = cRotation + (mod * TWO_PI * intensity);
     
-    // Color
-    float alphaVar = 1.0 + (colorMod * intensity);
-    float a = alpha(cFillColor) * constrain(alphaVar, 0.2, 1.0);
-    shape.fillColor = color(red(cFillColor), green(cFillColor), blue(cFillColor), a);
-    shape.strokeColor = cStrokeColor;
-    shape.strokeWeightVal = cStrokeWeight;
+    // Update Shape Colors
+    if (isFilled) {
+      shape.fillColor = cColor;
+      shape.strokeColor = color(0, 0); // No stroke
+      shape.strokeWeightVal = 0;
+    } else {
+      shape.fillColor = color(0, 0); // No fill
+      shape.strokeColor = cColor;
+      shape.strokeWeightVal = cStrokeWeight;
+    }
     
     shape.update();
   }
@@ -151,41 +177,25 @@ class ProjectionWindow {
   }
 
   void draw(PGraphics context, boolean drawDecorations) {
-    // Determine target PGraphics or PApplet
-    // Since 'g' is PGraphics, we can use that interface. 
-    // If context is null, use the current PApplet's main graphics (g).
-    // However, in Processing code, 'g' is available globally within classes usually?
-    // No, 'g' belongs to the PApplet. If this class is not an inner class of PApplet, 
-    // it technically doesn't see 'g' unless passed or if it uses PApplet functions which delegate to static/global context?
-    // Actually, in .pde files, classes are inner classes of the main PApplet by default?
-    // - "scopture.pde" compiles to a class. "ProjectionWindow" is usually an inner class.
-    // - BUT if it's in a separate tab/file, it's still an inner class of the main sketch class.
-    // - HOWEVER, we are drawing from *other* PApplets (OutputFrame). 
-    // - 'g' in 'ProjectionWindow' will refer to the MAIN sketch's 'g'.
-    // - So we MUST pass the context if we want to draw to a different PApplet.
-    
     PGraphics target = (context == null) ? g : context;
 
-    // Draw the shape into the buffer
     pg.beginDraw();
-    pg.background(0, 0); // Transparent (0 alpha)
+    pg.background(0, 0); 
     pg.pushMatrix();
-    pg.translate(pg.width/2 + animOffsetX, pg.height/2 + animOffsetY);
+    // Translate to Center + Animation Offset + Content Offset
+    pg.translate(pg.width/2 + animOffsetX + cContentX, pg.height/2 + animOffsetY + cContentY);
     shape.draw(pg);
     pg.popMatrix();
     pg.endDraw();
     
-    // Mask it
     pg.mask(pgMask);
     
     target.pushMatrix();
-    target.translate(cX, cY);
+    target.translate(x, y);
     
-    // Draw the masked shape
     target.imageMode(CENTER);
     target.image(pg, 0, 0);
     
-    // Draw Window Boundary (the frame)
     if (drawDecorations) {
       target.noFill();
       if (isSelected) {
@@ -195,19 +205,19 @@ class ProjectionWindow {
         target.stroke(100);
         target.strokeWeight(1);
       }
-      target.ellipse(0, 0, cRadius * 2, cRadius * 2);
+      target.ellipse(0, 0, radius * 2, radius * 2);
     }
     
     target.popMatrix();
   }
   
   boolean contains(float px, float py) {
-    return dist(px, py, cX, cY) < cRadius;
+    return dist(px, py, x, y) < radius;
   }
   
   boolean onEdge(float px, float py) {
-    float d = dist(px, py, cX, cY);
-    return d > cRadius - 10 && d < cRadius + 10;
+    float d = dist(px, py, x, y);
+    return d > radius - 10 && d < radius + 10;
   }
   
   void mousePressed(float px, float py) {
@@ -216,8 +226,8 @@ class ProjectionWindow {
       isSelected = true;
     } else if (contains(px, py)) {
       isDragging = true;
-      dragOffsetX = tX - px;
-      dragOffsetY = tY - py;
+      dragOffsetX = x - px;
+      dragOffsetY = y - py;
       isSelected = true;
     } else {
       isSelected = false;
@@ -226,11 +236,11 @@ class ProjectionWindow {
   
   void mouseDragged(float px, float py) {
     if (isResizing) {
-      float d = dist(px, py, cX, cY);
-      tRadius = max(20, d);
+      float d = dist(px, py, x, y);
+      radius = max(20, d);
     } else if (isDragging) {
-      tX = px + dragOffsetX;
-      tY = py + dragOffsetY;
+      x = px + dragOffsetX;
+      y = py + dragOffsetY;
     }
   }
   
@@ -239,10 +249,13 @@ class ProjectionWindow {
     isResizing = false;
   }
   
+  // Setters
   void setShapeType(int type) { shape.setTargetShape(type); }
   void setShapeSize(float s) { tShapeSize = s; }
   void setRotation(float r) { tRotation = r; }
-  void setStrokeColor(color c) { tStrokeColor = c; }
-  void setFillColor(color c) { tFillColor = c; }
+  void setColor(color c) { tColor = c; }
+  void setFilled(boolean filled) { isFilled = filled; }
   void setStrokeWeight(float w) { tStrokeWeight = w; }
+  void setContentOffset(float ox, float oy) { tContentX = ox; tContentY = oy; }
+  void setAutomationMode(int mode) { automationMode = mode; }
 }

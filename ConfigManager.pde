@@ -13,9 +13,9 @@ class ConfigManager {
         ProjectionWindow w = windows.get(i);
         JSONObject obj = new JSONObject();
         obj.setInt("id", w.id);
-        obj.setFloat("x", w.tX); // Save Target X
-        obj.setFloat("y", w.tY); // Save Target Y
-        obj.setFloat("radius", w.tRadius); // Save Target Radius
+        obj.setFloat("x", w.x); // Save Direct X
+        obj.setFloat("y", w.y); // Save Direct Y
+        obj.setFloat("radius", w.radius); // Save Direct Radius
         
         JSONObject shapeObj = new JSONObject();
         shapeObj.setInt("type", w.shape.currentShapeType);
@@ -62,11 +62,7 @@ class ConfigManager {
             w.setFillColor(shapeObj.getInt("fillColor"));
             w.setStrokeWeight(shapeObj.getFloat("strokeWeight"));
             
-            // Force update of currents to match loaded targets immediately?
-            // Or let them lerp?
-            // Usually load -> snap.
-            w.cX = w.tX; w.cY = w.tY;
-            w.cRadius = w.tRadius;
+            // Snap content to targets immediately
             w.cShapeSize = w.tShapeSize;
             w.cRotation = w.tRotation;
             w.cFillColor = w.tFillColor;
