@@ -1,28 +1,56 @@
 class ProjectionWindow {
-  // Window Properties (Direct control)
+  // Window Properties (Direct window layout)
   float x, y;
   float radius;
   
-  // Content Target Properties (Morphing/Lerping)
-  float tContentX = 0, tContentY = 0; // Offset from center
+  // Control Mode
+  // 0 = Manual
+  // 1 = Timed (BPM)
+  // 2 = Noise
+  int controlMode = 0;
+  
+  // --- PROPERTIES ---
+  
+  // 1. Content Position (Offset from center)
+  float contentX = 0, contentY = 0;
+  float tContentX = 0, tContentY = 0; // Target for lerping
+  
+  // 2. Size
+  float shapeSize;
   float tShapeSize;
-  float tRotation = 0;
-  int tColor = color(255);
-  boolean isFilled = true; // true = fill, false = stroke
-  float tStrokeWeight = 2; // Only used if !isFilled
   
-  // Content Current Properties
-  float cContentX = 0, cContentY = 0;
-  float cShapeSize;
-  float cRotation = 0;
-  int cColor = color(255);
-  float cStrokeWeight = 2;
+  // 3. Rotation
+  float rotation = 0;
+  float rotationSpeed = 0;
+  float tRotationSpeed = 0; // Target speed
   
-  // Automation State
-  // 0 = Manual (Static/User Controlled)
-  // 1 = Timed Events (Reacts to onBeat)
-  // 2 = Continuous (Drifts via noise)
-  int automationMode = 0; 
+  // 4. Style (Fill vs Stroke)
+  boolean isFilled = true;
+  // If timed/noise, this might flip automatically. 
+  // For manual, user sets it.
+  
+  // 5. Color
+  int cColor = color(0, 0, 100); // Current color (HSB)
+  int tColor = color(0, 0, 100); // Target color
+  
+  // 6. Stroke Weight (Fixed or variable? Let's make it variable)
+  float strokeWeightVal = 2;
+  float tStrokeWeightVal = 2;
+  
+  // 7. Automation Scales
+  float autoPosScale = 1.0;
+  float autoSizeScale = 1.0;
+
+  // --- INTERNALS ---
+  
+  MorphShape shape;
+  int id;
+  float seed; // Random seed for noise offsets
+  float lerpSpeed = 0.1;
+  
+  // Masking
+  PGraphics pg;
+  PGraphics pgMask;
   
   // Interaction
   boolean isDragging = false;
@@ -30,37 +58,17 @@ class ProjectionWindow {
   boolean isSelected = false;
   float dragOffsetX, dragOffsetY;
   
-  MorphShape shape;
-  int id;
-  float seed;
-  float timeOffset; // For noise diversity
-  
-  // Lerp Speed
-  float lerpSpeed = 0.05;
-  
-  // Animation Modulators (Existing Wobble/Dynamics)
-  float animOffsetX, animOffsetY;
-  
-  // Masking Buffers
-  PGraphics pg;
-  PGraphics pgMask;
-  
   ProjectionWindow(int id, float x, float y, float radius) {
     this.id = id;
     this.x = x; this.y = y;
     this.radius = radius;
     
-    this.tShapeSize = radius * 1.5; 
-    this.cShapeSize = tShapeSize;
+    // Defaults
+    this.shapeSize = radius * 1.5;
+    this.tShapeSize = shapeSize;
     
-    this.shape = new MorphShape(cShapeSize);
-    this.seed = random(1000);
-    this.timeOffset = random(10000);
-    
-    // Init colors
-    shape.fillColor = cColor;
-    shape.strokeColor = cColor;
-    shape.strokeWeightVal = cStrokeWeight;
+    this.shape = new MorphShape(shapeSize);
+    this.seed = random(10000);
     
     checkBuffers();
   }
@@ -79,101 +87,120 @@ class ProjectionWindow {
       pgMask.endDraw();
     }
   }
-
-  void update(float globalTime, int dynamicsMode, float speed, float intensity, boolean sync) {
+  
+  // Main Update Loop
+  // time: global time for noise
+  // noiseSpeed: global speed for noise walking
+  // beatHappened: true if a beat occurred this frame
+  // uniform: whether automation should be uniform
+  void update(float time, float noiseSpeed, boolean beatHappened, boolean uniform) {
     
-    // 1. Handle Continuous Automation
-    if (automationMode == 2) {
-      float nSpeed = speed * 0.5; // Slower drift for properties
-      float t = globalTime * nSpeed + timeOffset;
+    // --- MODE LOGIC ---
+    
+    if (controlMode == 1) { 
+      // --- TIMED EVENTS ---
+      if (beatHappened) {
+        triggerRandomState();
+      }
+      lerpProperties();
       
-      // Drift Size
-      float nSize = noise(t); 
-      tShapeSize = map(nSize, 0, 1, radius * 0.5, radius * 2.5);
+    } else if (controlMode == 2) {
+      // --- NOISE ---
+      applyNoise(time, noiseSpeed, uniform);
       
-      // Drift Rotation
-      float nRot = noise(t + 100);
-      tRotation = map(nRot, 0, 1, 0, TWO_PI * 2);
-      
-      // Drift Position (Content Offset)
-      float nX = noise(t + 200);
-      float nY = noise(t + 300);
-      float limit = radius * 0.5;
-      tContentX = map(nX, 0, 1, -limit, limit);
-      tContentY = map(nY, 0, 1, -limit, limit);
-      
-      // Drift Color
-      float nR = noise(t + 400);
-      float nG = noise(t + 500);
-      float nB = noise(t + 600);
-      tColor = color(nR * 255, nG * 255, nB * 255, alpha(tColor)); // Keep current alpha? Or drift alpha too?
+    } else {
+      // --- MANUAL ---
+      lerpProperties();
     }
     
-    // 2. LERP Content Properties towards Targets
-    cContentX = lerp(cContentX, tContentX, lerpSpeed);
-    cContentY = lerp(cContentY, tContentY, lerpSpeed);
-    cShapeSize = lerp(cShapeSize, tShapeSize, lerpSpeed);
-    cRotation = lerp(cRotation, tRotation, lerpSpeed);
-    cStrokeWeight = lerp(cStrokeWeight, tStrokeWeight, lerpSpeed);
-    cColor = lerpColor(cColor, tColor, lerpSpeed);
+    // --- CONTINUOUS ROTATION ---
+    rotation += rotationSpeed;
     
-    checkBuffers();
+    // --- SHAPE UPDATE ---
+    shape.currentSize = shapeSize * autoSizeScale;
+    shape.rotation = rotation; 
     
-    // 3. Calculate Dynamics (Wobble/Shake) - kept from previous version
-    float effectiveSeed = sync ? 0 : seed;
-    float mod = 0;
-    float posXMod = 0;
-    float posYMod = 0;
-    
-    switch (dynamicsMode) {
-      case 0: break;
-      case 1: // Noise
-        mod = noise(effectiveSeed + globalTime * speed) - 0.5;
-        posXMod = noise(effectiveSeed + 1000 + globalTime * speed) - 0.5;
-        posYMod = noise(effectiveSeed + 2000 + globalTime * speed) - 0.5;
-        break;
-      case 2: // Wave X
-        float phaseX = map(x, 0, width, 0, TWO_PI);
-        float waveVal = sin(phaseX + globalTime * speed * 5);
-        mod = waveVal * 0.5;
-        posYMod = waveVal * 0.5;
-        break;
-      case 3: // Wave Y
-        float phaseY = map(y, 0, height, 0, TWO_PI);
-        float waveValY = sin(phaseY + globalTime * speed * 5);
-        mod = waveValY * 0.5;
-        posXMod = waveValY * 0.5;
-        break;
-    }
-    
-    // 4. Apply Dynamics
-    animOffsetX = posXMod * radius * intensity * 2.0;
-    animOffsetY = posYMod * radius * intensity * 2.0;
-    
-    float sizeVar = 1.0 + (mod * intensity * 2.0);
-    shape.currentSize = cShapeSize * sizeVar;
-    shape.calculateTargetVertices(shape.currentShapeType);
-    
-    shape.rotation = cRotation + (mod * TWO_PI * intensity);
-    
-    // Update Shape Colors
+    // Color & Style
     if (isFilled) {
       shape.fillColor = cColor;
-      shape.strokeColor = color(0, 0); // No stroke
+      shape.strokeColor = color(0, 0); 
       shape.strokeWeightVal = 0;
     } else {
-      shape.fillColor = color(0, 0); // No fill
+      shape.fillColor = color(0, 0);
       shape.strokeColor = cColor;
-      shape.strokeWeightVal = cStrokeWeight;
+      shape.strokeWeightVal = strokeWeightVal;
     }
     
-    shape.update();
+    // Recalculate vertices if size/type changed
+    shape.calculateTargetVertices(shape.currentShapeType);
+    shape.update(); 
   }
   
-  void update() { shape.update(); }
+  void lerpProperties() {
+    contentX = lerp(contentX, tContentX, lerpSpeed);
+    contentY = lerp(contentY, tContentY, lerpSpeed);
+    shapeSize = lerp(shapeSize, tShapeSize, lerpSpeed);
+    rotationSpeed = lerp(rotationSpeed, tRotationSpeed, lerpSpeed);
+    strokeWeightVal = lerp(strokeWeightVal, tStrokeWeightVal, lerpSpeed);
+    cColor = lerpColor(cColor, tColor, lerpSpeed);
+  }
   
-  void draw() {
-    draw(null, true);
+  void triggerRandomState() {
+    float limit = radius * 0.5;
+    tContentX = random(-limit, limit);
+    tContentY = random(-limit, limit);
+    tShapeSize = random(radius * 0.5, radius * 2.5);
+    tRotationSpeed = random(-0.1, 0.1);
+    tColor = color(random(360), random(50, 100), random(50, 100));
+    isFilled = random(1) > 0.5;
+    tStrokeWeightVal = random(1, 10);
+    shape.setTargetShape(int(random(6)));
+  }
+  
+  // Called when Uniform automation triggers a beat
+  void setDirectTargetProperties(float tx, float ty, float tsz, float trot, int tcol, boolean fill, float tstr, int shapeType) {
+    // tx, ty, tsz are proportional (0-1 range approx or normalized). 
+    // We map them to this window's radius.
+    float limit = radius * 0.5;
+    tContentX = map(tx, -1, 1, -limit, limit);
+    tContentY = map(ty, -1, 1, -limit, limit);
+    tShapeSize = map(tsz, 0, 1, radius * 0.5, radius * 2.5);
+    
+    tRotationSpeed = trot;
+    tColor = tcol;
+    isFilled = fill;
+    tStrokeWeightVal = tstr;
+    shape.setTargetShape(shapeType);
+  }
+  
+  void applyNoise(float time, float speed, boolean uniform) {
+    float effectiveSeed = uniform ? 0 : seed;
+    float t = time * speed + effectiveSeed;
+    
+    // Use slower time for physical movement (Position, Size, Rot)
+    float tPhys = t * 0.2;
+    
+    // Pos (Normalized)
+    float limit = radius * 0.5;
+    contentX = map(noise(tPhys), 0, 1, -limit, limit);
+    contentY = map(noise(tPhys + 1000), 0, 1, -limit, limit);
+    
+    // Size (Normalized)
+    shapeSize = map(noise(tPhys + 2000), 0, 1, radius * 0.5, radius * 2.5);
+    
+    // Rot Speed
+    rotationSpeed = map(noise(tPhys + 3000), 0, 1, -0.1, 0.1);
+    
+    // Color (Drift Hue) - Keep faster/normal speed
+    float h = map(noise(t + 4000), 0, 1, 0, 360);
+    float s = map(noise(t + 5000), 0, 1, 50, 100);
+    float b = map(noise(t + 6000), 0, 1, 50, 100);
+    cColor = color(h, s, b);
+    
+    // Style
+    isFilled = noise(t * 0.1 + 7000) > 0.5;
+    
+    strokeWeightVal = map(noise(t + 8000), 0, 1, 1, 10);
   }
 
   void draw(PGraphics context, boolean drawDecorations) {
@@ -182,8 +209,10 @@ class ProjectionWindow {
     pg.beginDraw();
     pg.background(0, 0); 
     pg.pushMatrix();
-    // Translate to Center + Animation Offset + Content Offset
-    pg.translate(pg.width/2 + animOffsetX + cContentX, pg.height/2 + animOffsetY + cContentY);
+    
+    // Apply Position Scale Here
+    pg.translate(pg.width/2 + contentX * autoPosScale, pg.height/2 + contentY * autoPosScale);
+    
     shape.draw(pg);
     pg.popMatrix();
     pg.endDraw();
@@ -192,17 +221,16 @@ class ProjectionWindow {
     
     target.pushMatrix();
     target.translate(x, y);
-    
     target.imageMode(CENTER);
     target.image(pg, 0, 0);
     
     if (drawDecorations) {
       target.noFill();
       if (isSelected) {
-        target.stroke(0, 255, 255);
+        target.stroke(0, 0, 100); // White in HSB
         target.strokeWeight(3);
       } else {
-        target.stroke(100);
+        target.stroke(0, 0, 40); // Grey
         target.strokeWeight(1);
       }
       target.ellipse(0, 0, radius * 2, radius * 2);
@@ -211,51 +239,33 @@ class ProjectionWindow {
     target.popMatrix();
   }
   
-  boolean contains(float px, float py) {
-    return dist(px, py, x, y) < radius;
-  }
-  
+  // Interaction
+  boolean contains(float px, float py) { return dist(px, py, x, y) < radius; }
   boolean onEdge(float px, float py) {
     float d = dist(px, py, x, y);
     return d > radius - 10 && d < radius + 10;
   }
-  
   void mousePressed(float px, float py) {
-    if (onEdge(px, py)) {
-      isResizing = true;
-      isSelected = true;
-    } else if (contains(px, py)) {
-      isDragging = true;
-      dragOffsetX = x - px;
-      dragOffsetY = y - py;
-      isSelected = true;
-    } else {
-      isSelected = false;
-    }
+    if (onEdge(px, py)) { isResizing = true; }
+    else if (contains(px, py)) { isDragging = true; dragOffsetX = x - px; dragOffsetY = y - py; }
   }
-  
   void mouseDragged(float px, float py) {
-    if (isResizing) {
-      float d = dist(px, py, x, y);
-      radius = max(20, d);
-    } else if (isDragging) {
-      x = px + dragOffsetX;
-      y = py + dragOffsetY;
-    }
+    if (isResizing) { radius = max(20, dist(px, py, x, y)); }
+    else if (isDragging) { x = px + dragOffsetX; y = py + dragOffsetY; }
   }
-  
-  void mouseReleased() {
-    isDragging = false;
-    isResizing = false;
-  }
+  void mouseReleased() { isDragging = false; isResizing = false; }
   
   // Setters
+  void setManualSize(float s) { tShapeSize = s; }
+  void setManualRotSpeed(float s) { tRotationSpeed = s; }
+  void setManualColor(int c) { tColor = c; }
+  void setManualFilled(boolean f) { isFilled = f; }
+  void setManualContentPos(float ox, float oy) { tContentX = ox; tContentY = oy; }
+  void setManualStrokeWeight(float w) { tStrokeWeightVal = w; }
+  
+  void setControlMode(int m) { controlMode = m; }
   void setShapeType(int type) { shape.setTargetShape(type); }
-  void setShapeSize(float s) { tShapeSize = s; }
-  void setRotation(float r) { tRotation = r; }
-  void setColor(color c) { tColor = c; }
-  void setFilled(boolean filled) { isFilled = filled; }
-  void setStrokeWeight(float w) { tStrokeWeight = w; }
-  void setContentOffset(float ox, float oy) { tContentX = ox; tContentY = oy; }
-  void setAutomationMode(int mode) { automationMode = mode; }
+  
+  void setAutoPosScale(float s) { autoPosScale = s; }
+  void setAutoSizeScale(float s) { autoSizeScale = s; }
 }

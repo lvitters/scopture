@@ -20,6 +20,7 @@ public class OutputFrame extends PApplet {
   
   public void setup() {
     surface.setTitle("Output Projection");
+    colorMode(HSB, 360, 100, 100);
   }
   
   public void draw() {
