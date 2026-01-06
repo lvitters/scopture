@@ -15,7 +15,7 @@ public class OutputFrame extends PApplet {
   }
   
   public void settings() {
-    size(w, h); // Standard projector resolution usually
+    size(w, h, P2D); // Standard projector resolution usually
   }
   
   public void setup() {
@@ -31,8 +31,9 @@ public class OutputFrame extends PApplet {
     
     synchronized(windows) {
       for (ProjectionWindow w : windows) {
-        // Draw WITHOUT decorations
-        w.draw(this.g, false);
+        // Draw decorations ONLY if one of the transformation modes is active
+        boolean showDecorations = w.isKeystoning || w.isResizable || w.isDraggable;
+        w.draw(this.g, showDecorations);
       }
     }
   }

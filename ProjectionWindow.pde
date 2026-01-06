@@ -52,10 +52,18 @@ class ProjectionWindow {
   PGraphics pg;
   PGraphics pgMask;
   
+  // Keystone
+  boolean isKeystoning = false;
+  PVector[] corners = new PVector[4]; // TL, TR, BR, BL relative to x,y
+  int activeCorner = -1;
+  
   // Interaction
   boolean isDragging = false;
   boolean isResizing = false;
   boolean isSelected = false;
+  boolean isDraggable = false; // Dragging Guard
+  boolean isResizable = false; // Resizing Guard
+  long lastSelectionTime = 0;
   float dragOffsetX, dragOffsetY;
   
   ProjectionWindow(int id, float x, float y, float radius) {
@@ -70,13 +78,25 @@ class ProjectionWindow {
     this.shape = new MorphShape(shapeSize);
     this.seed = random(10000);
     
+    resetCorners();
     checkBuffers();
+  }
+  
+  void resetCorners() {
+    corners[0] = new PVector(-radius, -radius);
+    corners[1] = new PVector(radius, -radius);
+    corners[2] = new PVector(radius, radius);
+    corners[3] = new PVector(-radius, radius);
   }
   
   void checkBuffers() {
     int requiredSize = (int)(radius * 2 + 20);
     if (pg == null || pg.width != requiredSize) {
       pg = createGraphics(requiredSize, requiredSize);
+      pg.beginDraw();
+      pg.colorMode(HSB, 360, 100, 100);
+      pg.endDraw();
+      
       pgMask = createGraphics(requiredSize, requiredSize);
       
       pgMask.beginDraw();
@@ -203,6 +223,13 @@ class ProjectionWindow {
     strokeWeightVal = map(noise(t + 8000), 0, 1, 1, 10);
   }
 
+  PVector getInterpolatedPoint(float u, float v) {
+    // Bilinear interpolation between the 4 corners
+    PVector top = PVector.lerp(corners[0], corners[1], u);
+    PVector bottom = PVector.lerp(corners[3], corners[2], u);
+    return PVector.lerp(top, bottom, v);
+  }
+
   void draw(PGraphics context, boolean drawDecorations) {
     PGraphics target = (context == null) ? g : context;
 
@@ -219,41 +246,169 @@ class ProjectionWindow {
     
     pg.mask(pgMask);
     
+    // Draw Selection Ring into the buffer so it warps with keystone
+    if (drawDecorations) {
+       pg.beginDraw();
+       pg.noFill();
+       if (isSelected) {
+         if (isResizable) {
+           pg.stroke(0, 100, 100); // Red
+           pg.strokeWeight(8);
+         } else if (isDraggable) {
+           pg.stroke(210, 100, 100); // Blue
+           pg.strokeWeight(8);
+         } else if (isKeystoning) {
+           pg.stroke(120, 100, 100); // Green
+           pg.strokeWeight(8);
+         } else {
+           // White for Neutral Selection
+           pg.stroke(0, 0, 100); 
+           pg.strokeWeight(4); 
+         }
+       } else {
+         pg.stroke(0, 0, 40); // Grey
+         pg.strokeWeight(1);
+       }
+       pg.ellipse(pg.width/2, pg.height/2, radius * 2, radius * 2);
+       pg.endDraw();
+    }
+    
     target.pushMatrix();
     target.translate(x, y);
-    target.imageMode(CENTER);
-    target.image(pg, 0, 0);
+    
+    // Keystoned Draw with Subdivision to fix affine artifacts
+    target.noStroke();
+    target.fill(255);
+    
+    int steps = 20; // 20x20 grid
+    target.beginShape(QUAD);
+    target.texture(pg);
+    
+    for (int i = 0; i < steps; i++) {
+      for (int j = 0; j < steps; j++) {
+        float u0 = (float)i / steps;
+        float u1 = (float)(i + 1) / steps;
+        float v0 = (float)j / steps;
+        float v1 = (float)(j + 1) / steps;
+        
+        // Calculate 4 corners of this cell
+        PVector p00 = getInterpolatedPoint(u0, v0);
+        PVector p10 = getInterpolatedPoint(u1, v0);
+        PVector p11 = getInterpolatedPoint(u1, v1);
+        PVector p01 = getInterpolatedPoint(u0, v1);
+        
+        // Texture coords
+        float tU0 = u0 * pg.width;
+        float tU1 = u1 * pg.width;
+        float tV0 = v0 * pg.height;
+        float tV1 = v1 * pg.height;
+        
+        target.vertex(p00.x, p00.y, tU0, tV0);
+        target.vertex(p10.x, p10.y, tU1, tV0);
+        target.vertex(p11.x, p11.y, tU1, tV1);
+        target.vertex(p01.x, p01.y, tU0, tV1);
+      }
+    }
+    target.endShape();
     
     if (drawDecorations) {
-      target.noFill();
-      if (isSelected) {
-        target.stroke(0, 0, 100); // White in HSB
-        target.strokeWeight(3);
-      } else {
-        target.stroke(0, 0, 40); // Grey
-        target.strokeWeight(1);
+      // Draw Keystone Handles (Screen space, not warped)
+      if (isKeystoning && isSelected) {
+        target.fill(120, 100, 100); // Bright Green
+        target.noStroke();
+        for (PVector c : corners) {
+          target.ellipse(c.x, c.y, 18, 18);
+        }
       }
-      target.ellipse(0, 0, radius * 2, radius * 2);
     }
     
     target.popMatrix();
   }
   
   // Interaction
-  boolean contains(float px, float py) { return dist(px, py, x, y) < radius; }
+  boolean contains(float px, float py) { 
+    if (isKeystoning && isSelected) {
+       for (PVector c : corners) {
+         if (dist(px - x, py - y, c.x, c.y) < 20) return true;
+       }
+    }
+    return dist(px, py, x, y) < radius; 
+  }
   boolean onEdge(float px, float py) {
     float d = dist(px, py, x, y);
     return d > radius - 10 && d < radius + 10;
   }
+  
+  void toggleKeystone() {
+     isKeystoning = !isKeystoning; 
+  }
+  
   void mousePressed(float px, float py) {
-    if (onEdge(px, py)) { isResizing = true; }
-    else if (contains(px, py)) { isDragging = true; dragOffsetX = x - px; dragOffsetY = y - py; }
+    if (mouseButton != LEFT) return; // Only LEFT button allowed
+    
+    // 1. Keystone Handles (Highest Priority)
+    if (isKeystoning && isSelected) {
+      float relX = px - x;
+      float relY = py - y;
+      for (int i = 0; i < 4; i++) {
+        if (dist(relX, relY, corners[i].x, corners[i].y) < 20) {
+          activeCorner = i;
+          return; 
+        }
+      }
+    }
+    
+    // Check if inside window
+    if (contains(px, py)) {
+      // 2. Resize Mode
+      if (isResizable) {
+        isResizing = true;
+        // Don't return, allow logic to proceed? No, one action per click.
+        return;
+      }
+      
+      // 3. Drag Mode
+      if (isDraggable) {
+        isDragging = true;
+        dragOffsetX = x - px;
+        dragOffsetY = y - py;
+      }
+    }
   }
+  
   void mouseDragged(float px, float py) {
-    if (isResizing) { radius = max(20, dist(px, py, x, y)); }
-    else if (isDragging) { x = px + dragOffsetX; y = py + dragOffsetY; }
+    if (activeCorner != -1) {
+       corners[activeCorner].x = px - x;
+       corners[activeCorner].y = py - y;
+    }
+    else if (isResizing) { 
+      float oldRadius = radius;
+      radius = max(20, dist(px, py, x, y)); 
+      
+      if (oldRadius > 0) {
+        float scale = radius / oldRadius;
+        // Scale Size
+        shapeSize *= scale;
+        tShapeSize *= scale;
+        
+        // Scale Position
+        contentX *= scale;
+        tContentX *= scale;
+        contentY *= scale;
+        tContentY *= scale;
+        
+        // Scale Stroke
+        strokeWeightVal *= scale;
+        tStrokeWeightVal *= scale;
+        
+        // Scale Corners
+        for(PVector c : corners) c.mult(scale);
+      }
+      checkBuffers();
+    }
+    else if (isDragging && isDraggable) { x = px + dragOffsetX; y = py + dragOffsetY; }
   }
-  void mouseReleased() { isDragging = false; isResizing = false; }
+  void mouseReleased() { isDragging = false; isResizing = false; activeCorner = -1; }
   
   // Setters
   void setManualSize(float s) { tShapeSize = s; }

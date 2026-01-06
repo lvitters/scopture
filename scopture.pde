@@ -14,18 +14,20 @@ ArrayList<Button> buttons = new ArrayList<Button>();
 ArrayList<Slider> sliders = new ArrayList<Slider>();
 
 // Global State
-boolean applyToAll = false;
+boolean applyToAll = true;
 boolean uniformAutomation = false;
 float globalTime = 0;
+ProjectionWindow activeWindow = null;
 
 // Shared Automation Params
 float noiseSpeed = 0.002;
 float bpm = 120;
 int lastBeatTime = 0;
 boolean beatHappened = false;
+ArrayList<Integer> tapTimes = new ArrayList<Integer>();
 
 void settings() {
-  size(uiWidth + previewWidth, previewHeight);
+  size(uiWidth + previewWidth, previewHeight, P2D);
 }
 
 void setup() {
@@ -55,6 +57,28 @@ StateChecker checkMode(int m) {
     ProjectionWindow w = getSelectedWindow(); 
     return w != null && w.controlMode == m; 
   };
+}
+
+void handleTap() {
+  int now = millis();
+  if (tapTimes.size() > 0 && now - tapTimes.get(tapTimes.size() - 1) > 2000) {
+    tapTimes.clear();
+  }
+  tapTimes.add(now);
+  if (tapTimes.size() > 4) {
+    tapTimes.remove(0);
+  }
+  
+  if (tapTimes.size() > 1) {
+    float sumIntervals = 0;
+    for (int i = 1; i < tapTimes.size(); i++) {
+      sumIntervals += (tapTimes.get(i) - tapTimes.get(i - 1));
+    }
+    float avgInterval = sumIntervals / (tapTimes.size() - 1);
+    if (avgInterval > 0) {
+      bpm = 60000.0 / avgInterval;
+    }
+  }
 }
 
 void setupUI() {
@@ -88,8 +112,9 @@ void setupUI() {
     .setActiveCheck(() -> uniformAutomation));
   y += spacing;
   
-  sliders.add(new Slider("BPM (Timed)", 30, 200, 120, x, y, 210, 20, (val) -> bpm = val)
+  sliders.add(new Slider("BPM (Timed)", 30, 200, 120, x, y, 160, 20, (val) -> bpm = val)
     .setValueGetter(() -> bpm));
+  buttons.add(new Button("Tap", x + 165, y, 45, 20, () -> handleTap()));
   y += spacing;
   sliders.add(new Slider("Noise Speed", 0, 0.01, 0.002, x, y, 210, 20, (val) -> noiseSpeed = val)
     .setValueGetter(() -> noiseSpeed));
@@ -370,16 +395,58 @@ void mousePressed() {
     synchronized(windows) {
       for (int i = windows.size() - 1; i >= 0; i--) {
         ProjectionWindow w = windows.get(i);
-        if (w.contains(px, py) || w.onEdge(px, py)) {
-           w.isSelected = !w.isSelected;
-           if (w.isSelected) w.mousePressed(px, py);
+        if (w.contains(px, py)) {
+           activeWindow = w;
+           if (mouseButton == LEFT) {
+             boolean shift = (keyPressed && keyCode == SHIFT);
+             
+             if (shift) {
+               // Shift: Toggle this, keep others
+               w.isSelected = !w.isSelected;
+               if (w.isSelected) {
+                 w.lastSelectionTime = millis();
+               } else {
+                 // Deselected -> Clear modes
+                 w.isDraggable = false;
+                 w.isResizable = false;
+                 w.isKeystoning = false;
+               }
+             } else {
+               // No Shift: Select ONLY this one
+               
+               // First deselect all others
+               for (ProjectionWindow other : windows) {
+                 if (other != w) {
+                   other.isSelected = false;
+                   other.isDraggable = false;
+                   other.isResizable = false;
+                   other.isKeystoning = false;
+                 }
+               }
+               
+               // Select this one
+               w.isSelected = true;
+               w.lastSelectionTime = millis();
+             }
+           }
+           w.mousePressed(px, py);
+           
+           // Bring to front (render last)
+           windows.remove(i);
+           windows.add(w);
+           
            clickedAnyWindow = true;
            break; 
         }
       }
       
-      if (!clickedAnyWindow) {
-         for (ProjectionWindow w : windows) w.isSelected = false;
+      if (!clickedAnyWindow && mouseButton == LEFT) {
+         for (ProjectionWindow w : windows) {
+           w.isSelected = false;
+           w.isDraggable = false;
+           w.isResizable = false;
+           w.isKeystoning = false;
+         }
       }
     }
   }
@@ -391,12 +458,100 @@ void mouseDragged() {
   } else {
     float px = mouseX - uiWidth;
     float py = mouseY;
-    synchronized(windows) {
-      for (ProjectionWindow w : windows) w.mouseDragged(px, py);
+    
+    if (activeWindow != null) {
+      synchronized(windows) {
+        activeWindow.mouseDragged(px, py);
+      }
     }
   }
 }
 
 void mouseReleased() {
-  synchronized(windows) { for (ProjectionWindow w : windows) w.mouseReleased(); }
+  if (activeWindow != null) {
+    synchronized(windows) { 
+      activeWindow.mouseReleased(); 
+    }
+    activeWindow = null;
+  }
+}
+
+void keyPressed() {
+  if (key == 'c' || key == 'C') {
+    synchronized(windows) {
+      ProjectionWindow target = null;
+      long maxTime = -1;
+      for (ProjectionWindow w : windows) {
+        if (w.isSelected && w.lastSelectionTime > maxTime) {
+          maxTime = w.lastSelectionTime;
+          target = w;
+        }
+      }
+      
+      if (target != null) {
+        boolean nextState = !target.isKeystoning;
+        for (ProjectionWindow w : windows) {
+          if (w == target) {
+            w.isKeystoning = nextState;
+            if (nextState) { w.isDraggable = false; w.isResizable = false; }
+          } else {
+            w.isSelected = false;
+            w.isKeystoning = false;
+          }
+        }
+      }
+    }
+  }
+  
+  if (key == 'd' || key == 'D') {
+    synchronized(windows) {
+      ProjectionWindow target = null;
+      long maxTime = -1;
+      for (ProjectionWindow w : windows) {
+        if (w.isSelected && w.lastSelectionTime > maxTime) {
+          maxTime = w.lastSelectionTime;
+          target = w;
+        }
+      }
+      
+      if (target != null) {
+        boolean nextState = !target.isDraggable;
+        for (ProjectionWindow w : windows) {
+          if (w == target) {
+            w.isDraggable = nextState;
+            if (nextState) { w.isResizable = false; w.isKeystoning = false; }
+          } else {
+             w.isSelected = false; 
+             w.isDraggable = false; w.isResizable = false; w.isKeystoning = false;
+          }
+        }
+      }
+    }
+  }
+  
+  if (key == 'r' || key == 'R') {
+    synchronized(windows) {
+      ProjectionWindow target = null;
+      long maxTime = -1;
+      for (ProjectionWindow w : windows) {
+        if (w.isSelected && w.lastSelectionTime > maxTime) {
+          maxTime = w.lastSelectionTime;
+          target = w;
+        }
+      }
+      
+      if (target != null) {
+        boolean nextState = !target.isResizable;
+        for (ProjectionWindow w : windows) {
+          if (w == target) {
+             w.isResizable = nextState;
+             if (nextState) { w.isDraggable = false; w.isKeystoning = false; }
+          } else {
+             w.isSelected = false;
+             w.isDraggable = false; w.isResizable = false; w.isKeystoning = false;
+          }
+        }
+      }
+    }
+  }
 }
